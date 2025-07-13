@@ -21,6 +21,9 @@ pub(crate) enum Error {
 #[derive(Debug)]
 pub(crate) struct Glob {
     tokens: Vec<Token>,
+
+    /// Whether there is a [`Token::PathSeparator`] in the tokens.
+    has_separator: bool,
 }
 
 impl Glob {
@@ -33,7 +36,14 @@ impl Glob {
             return Err(Error::InvalidRange);
         }
 
-        Ok(Self { tokens })
+        let has_separator = tokens.iter().any(Token::is_separator);
+
+        Ok(Self { tokens, has_separator })
+    }
+
+    pub(crate) fn matches<S: AsRef<str>>(path: S) -> bool {
+        let path = path.as_ref();
+        todo!();
     }
 }
 
@@ -165,6 +175,10 @@ impl Token {
             Token::NumRange(range) => Some(range),
             _ => None,
         }
+    }
+
+    const fn is_separator(&self) -> bool {
+        matches!(self, Self::PathSeperator)
     }
 }
 

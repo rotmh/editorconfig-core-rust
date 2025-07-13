@@ -1,3 +1,6 @@
+//! The core is responsible to parse EditorConfig files, and produce headers and
+//! pairs.
+
 use crate::glob::{self, Glob};
 
 /// Characters which converts a line to a comment (thus discardable) when
