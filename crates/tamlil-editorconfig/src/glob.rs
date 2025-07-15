@@ -54,7 +54,10 @@ impl Glob {
         regex.push_str(&re);
         regex.push('$');
 
-        let re = Regex::new(&regex).map_err(|_| Error::RegexCompilation)?;
+        let re = Regex::new(&regex).map_err(|e| {
+            eprintln!("{e}");
+            Error::RegexCompilation
+        })?;
 
         Ok(Self { re, num_ranges })
     }
@@ -123,7 +126,7 @@ impl<'a> Parser<'a> {
 
     fn parse_escape(&mut self) {
         if let Some(ch) = self.bump() {
-            if regex_syntax::is_meta_character(ch) {
+            if regex_syntax::is_escapeable_character(ch) {
                 self.regex.push('\\');
             } else {
                 self.regex.push_str("\\\\");
@@ -148,8 +151,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_bracket(&mut self) {
+        // If the charset contains a path separator, we treat that charset as a
+        // literal - so we need to escape _all_ the meta characters (inc. the
+        // bracket delimiters and the internal ranges i.e., `[`, `]`, and `-`).
+        let has_sep = charset_has_path_separator(self.rest().unwrap());
+
+        if has_sep {
+            self.regex.push('\\');
+        }
+
         self.regex.push('[');
-        if self.peek().is_some_and(|ch| ch == '!') {
+        if !has_sep && self.peek().is_some_and(|ch| ch == '!') {
             assert_eq!(self.bump(), Some('!'));
             self.regex.push('^');
         }
@@ -164,11 +176,19 @@ impl<'a> Parser<'a> {
                 }
                 '\\' => escaped = true,
                 ']' => {
+                    if has_sep {
+                        self.regex.push('\\');
+                    }
                     self.regex.push(']');
                     break;
                 }
-                // We want to allow ranges.
-                '-' => self.regex.push('-'),
+                '-' => {
+                    if has_sep {
+                        self.regex.push('\\');
+                    }
+                    // We want to allow ranges.
+                    self.regex.push('-');
+                }
                 ch => self.parse_literal(ch),
             }
         }
@@ -269,6 +289,11 @@ impl<'a> Parser<'a> {
     fn peek(&mut self) -> Option<char> {
         self.chars.peek().map(|&(_idx, ch)| ch)
     }
+
+    fn rest(&self) -> Option<&str> {
+        let (curr_idx, _ch) = self.curr?;
+        Some(&self.pattern[curr_idx..])
+    }
 }
 
 fn parse_range(s: &str) -> Option<RangeInclusive<i32>> {
@@ -277,6 +302,22 @@ fn parse_range(s: &str) -> Option<RangeInclusive<i32>> {
     let start = num1.parse().ok()?;
     let end = num2.parse().ok()?;
     Some(RangeInclusive::new(start, end))
+}
+
+fn charset_has_path_separator(s: &str) -> bool {
+    let mut escaped = false;
+
+    for byte in s.bytes() {
+        match byte {
+            b'/' => return true,
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b']' => return false,
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn is_single_item_braces(s: &str) -> Option<usize> {
