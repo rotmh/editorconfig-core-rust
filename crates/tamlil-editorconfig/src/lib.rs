@@ -178,7 +178,7 @@ fn parse_dir(
             if options.allow_unset && value.eq_ignore_ascii_case(UNSET_VALUE) {
                 properties.remove(&key.to_lowercase());
             } else {
-                properties.insert(key.to_lowercase(), value.to_owned());
+                properties.insert(key.to_lowercase(), value.to_lowercase());
             }
         } else if section_matches_file.is_none()
             && let Some((key, value)) = parse_pair(l)
