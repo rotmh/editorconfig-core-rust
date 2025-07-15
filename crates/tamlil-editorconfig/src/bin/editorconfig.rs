@@ -1,13 +1,18 @@
 use clap::Parser as _;
-use tamlil_editorconfig::{EDITORCONFIG_VERSION, Options, Properties};
+use tamlil_editorconfig::{
+    DEFAULT_FILE_NAME, MAX_VERSION, Options, Properties, Version,
+};
 
 #[derive(clap::Parser)]
 struct Cli {
     #[arg(short, long)]
     version: bool,
 
-    #[arg(short = 'f')]
-    ec_file_name: Option<String>,
+    #[arg(short = 'f', default_value_t = DEFAULT_FILE_NAME.to_string())]
+    ec_file_name: String,
+
+    #[arg(short = 'b', default_value_t = MAX_VERSION)]
+    ec_version: Version,
 
     files: Vec<String>,
 }
@@ -26,7 +31,8 @@ fn main() {
         }
 
         let options = Options {
-            file_name: args.ec_file_name.as_deref().unwrap_or(".editorconfig"),
+            file_name: &args.ec_file_name,
+            version: args.ec_version,
             allow_unset: false,
         };
         print_pairs(file, options);
@@ -44,8 +50,6 @@ fn print_pairs(file: &str, options: Options) {
 fn print_version() {
     println!(
         "EditorConfig Version {}.{}.{}",
-        EDITORCONFIG_VERSION.major,
-        EDITORCONFIG_VERSION.minor,
-        EDITORCONFIG_VERSION.patch
+        MAX_VERSION.major, MAX_VERSION.minor, MAX_VERSION.patch
     );
 }

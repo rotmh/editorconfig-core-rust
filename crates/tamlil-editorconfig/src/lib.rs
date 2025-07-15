@@ -1,6 +1,7 @@
 #![feature(trim_prefix_suffix, trait_alias)]
 
 mod glob;
+mod version;
 
 use std::collections::HashMap;
 use std::convert::identity;
@@ -9,13 +10,13 @@ use std::io::{self, BufRead as _, BufReader};
 use std::path::Path;
 
 use crate::glob::Glob;
+pub use crate::version::Version;
 
-/// Version which this implementation complies to.
-pub const EDITORCONFIG_VERSION: Version =
-    Version { major: 0, minor: 17, patch: 2 };
+pub const MAX_VERSION: Version = Version { major: 0, minor: 17, patch: 2 };
+pub const DEFAULT_FILE_NAME: &str = ".editorconfig";
 
-const DEFAULT_FILE_NAME: &str = ".editorconfig";
 const DEFAULT_ALLOW_UNSET: bool = true;
+
 const UNSET_VALUE: &str = "unset";
 
 #[derive(Debug)]
@@ -28,11 +29,16 @@ pub enum Error {
 pub struct Options<'a> {
     pub file_name: &'a str,
     pub allow_unset: bool,
+    pub version: Version,
 }
 
 impl<'a> Default for Options<'a> {
     fn default() -> Self {
-        Self { file_name: DEFAULT_FILE_NAME, allow_unset: DEFAULT_ALLOW_UNSET }
+        Self {
+            file_name: DEFAULT_FILE_NAME,
+            allow_unset: DEFAULT_ALLOW_UNSET,
+            version: MAX_VERSION,
+        }
     }
 }
 
@@ -77,6 +83,8 @@ impl Properties {
             parse_dir(dir, &normalized_path, &options, &mut properties)?;
         }
 
+        process_properties(&mut properties, &options);
+
         Ok(Self(properties))
     }
 
@@ -90,6 +98,43 @@ impl Properties {
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+}
+
+/// Process and modify the properties to adhere to the specification at the
+/// version in `options`.
+fn process_properties(
+    properties: &mut HashMap<String, String>,
+    options: &Options,
+) {
+    // TODO: explain what's happening here.
+
+    const V0_9_0: Version = Version { major: 0, minor: 9, patch: 0 };
+
+    const INDENT_STYLE: &str = "indent_style";
+    const INDENT_SIZE: &str = "indent_size";
+    const TAB_WIDTH: &str = "tab_width";
+    const TAB: &str = "tab";
+
+    if options.version.cmp(&V0_9_0).is_ge() {
+        if properties.get(INDENT_STYLE).is_some_and(|v| v == TAB)
+            && !properties.contains_key(INDENT_SIZE)
+        {
+            properties.insert(INDENT_SIZE.to_owned(), TAB.to_owned());
+        }
+
+        if properties.get(INDENT_SIZE).is_some_and(|v| v == TAB)
+            && let Some(tab_width) = properties.get(TAB_WIDTH)
+        {
+            properties.insert(INDENT_SIZE.to_owned(), tab_width.to_owned());
+        }
+    }
+
+    if let Some(indent_size) = properties.get(INDENT_SIZE)
+        && !properties.contains_key(TAB_WIDTH)
+        && (options.version.cmp(&V0_9_0).is_lt() || indent_size != TAB)
+    {
+        properties.insert(TAB_WIDTH.to_owned(), indent_size.to_owned());
     }
 }
 
@@ -176,10 +221,4 @@ fn parse_pair(line: &str) -> Option<(&str, &str)> {
 fn normalize_path(path: &Path) -> Result<String, Error> {
     let path = path.to_str().ok_or(Error::InvalidPath)?;
     Ok(if cfg!(windows) { path.replace('\\', "/") } else { path.to_owned() })
-}
-
-pub struct Version {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
 }
