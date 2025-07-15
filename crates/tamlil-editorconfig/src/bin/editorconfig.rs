@@ -42,14 +42,14 @@ fn main() {
 fn print_pairs(file: &str, options: Options) {
     let props = Properties::new_with_options(file, options).unwrap();
 
-    for (key, value) in props.iter() {
+    let mut props = props.iter().collect::<Vec<_>>();
+    props.sort_unstable_by_key(|&(key, _value)| key);
+
+    for (key, value) in props {
         println!("{key}={value}");
     }
 }
 
 fn print_version() {
-    println!(
-        "EditorConfig Version {}.{}.{}",
-        MAX_VERSION.major, MAX_VERSION.minor, MAX_VERSION.patch
-    );
+    println!("EditorConfig Version {MAX_VERSION}");
 }
