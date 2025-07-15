@@ -7,8 +7,6 @@ use regex::{Match, Regex};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum Error {
-    /// Couldn't parse the input as a glob expression.
-    Parse,
     /// A range was found that does not hold `num1 < num2` in `num1..num2`.
     InvalidRange,
     NonDirPath,
@@ -87,8 +85,6 @@ struct Parser<'a> {
 
     are_braces_paired: bool,
     brace_level: Option<NonZeroU32>,
-    // inside '[' ... ']'
-    is_inside_brackets: bool,
 
     num_ranges: Vec<RangeInclusive<i32>>,
     regex: String,
@@ -102,7 +98,6 @@ impl<'a> Parser<'a> {
             curr: None,
             are_braces_paired: check_are_braces_paired(pattern),
             brace_level: None,
-            is_inside_brackets: false,
             num_ranges: vec![],
             regex: String::with_capacity(pattern.len()),
         }
@@ -117,6 +112,7 @@ impl<'a> Parser<'a> {
                 '[' => self.parse_bracket(),
                 '{' => self.parse_open_brace(),
                 '}' => self.parse_close_brace(),
+                '/' => self.parse_path_separator(),
                 ',' => self.parse_comma(),
                 ch => self.parse_literal(ch),
             }
@@ -171,6 +167,8 @@ impl<'a> Parser<'a> {
                     self.regex.push(']');
                     break;
                 }
+                // We want to allow ranges.
+                '-' => self.regex.push('-'),
                 ch => self.parse_literal(ch),
             }
         }
@@ -226,6 +224,21 @@ impl<'a> Parser<'a> {
             self.regex.push('|');
         } else {
             self.regex.push_str("\\,");
+        }
+    }
+
+    fn parse_path_separator(&mut self) {
+        let (curr_idx, _ch) = self.curr.unwrap();
+        let s = &self.pattern[curr_idx..];
+
+        if s.starts_with("/**/") {
+            self.regex.push_str("(:?/|/.*/)");
+
+            for _ in (0.."/**/".len()).skip(1) {
+                let _ = self.bump().unwrap();
+            }
+        } else {
+            self.regex.push('/');
         }
     }
 
