@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::convert::identity;
 use std::fs::File;
 use std::io::{self, BufRead as _, BufReader};
-use std::ops::ControlFlow;
 use std::path::Path;
 
 use crate::glob::Glob;
@@ -50,6 +49,14 @@ pub trait Property {
 pub struct Properties(HashMap<String, String>);
 
 impl Properties {
+    /// Retreives the properties for the file at `path`.
+    ///
+    /// Uses the default options, which are `".editorconfig"` as the filename
+    /// for EditorConfig files, and recognizing `"unset"` values
+    /// (case-insensitive) - which leads to discarding properties with `"unset"`
+    /// values.
+    ///
+    /// Note: `path` doesn't have to exist.
     pub fn new<P>(path: P) -> Result<Self, Error>
     where
         P: AsRef<Path>,
@@ -64,12 +71,10 @@ impl Properties {
         let normalized_path = normalize_path(path.as_ref())?;
         let mut properties = HashMap::new();
 
-        for dir in path.as_ref().ancestors().skip(1) {
-            let control_flow =
-                parse_dir(dir, &normalized_path, &options, &mut properties)?;
-            if control_flow.is_break() {
-                break;
-            }
+        let ancestors: Vec<_> = path.as_ref().ancestors().skip(1).collect();
+
+        for dir in ancestors.iter().rev() {
+            parse_dir(dir, &normalized_path, &options, &mut properties)?;
         }
 
         Ok(Self(properties))
@@ -93,7 +98,7 @@ fn parse_dir(
     normalized_file_path: &str,
     options: &Options,
     properties: &mut HashMap<String, String>,
-) -> Result<ControlFlow<()>, Error> {
+) -> Result<(), Error> {
     const COMMENT: &[char] = &['#', ';'];
 
     let ec_file_path = ec_dir.join(options.file_name);
@@ -101,7 +106,7 @@ fn parse_dir(
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             // The EditorConfig file doesn't have to exist at any of the dirs.
-            return Ok(ControlFlow::Continue(()));
+            return Ok(());
         }
         Err(e) => return Err(Error::Io(e)),
     };
@@ -113,7 +118,6 @@ fn parse_dir(
     let mut line = String::new();
 
     let mut section_matches_file = None;
-    let mut is_root = false;
 
     while reader.read_line(&mut line).map_err(Error::Io)? != 0 {
         let l = line.trim_suffix('\n').trim_suffix('\r').trim();
@@ -136,17 +140,16 @@ fn parse_dir(
             && key.eq_ignore_ascii_case("root")
             && value.eq_ignore_ascii_case("true")
         {
-            is_root = true;
+            // We walk from the root to the directory of the target file, so if
+            // an EditorConfig file is a root, it means that all the
+            // EditorConfig files "below" it should be discarded.
+            properties.clear();
         }
 
         line.clear();
     }
 
-    if is_root {
-        Ok(ControlFlow::Break(()))
-    } else {
-        Ok(ControlFlow::Continue(()))
-    }
+    Ok(())
 }
 
 fn parse_section(
