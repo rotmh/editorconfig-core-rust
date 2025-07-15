@@ -178,7 +178,7 @@ fn parse_dir(
             if options.allow_unset && value.eq_ignore_ascii_case(UNSET_VALUE) {
                 properties.remove(&key.to_lowercase());
             } else {
-                properties.insert(key.to_lowercase(), value.to_lowercase());
+                insert_pair(properties, key, value);
             }
         } else if section_matches_file.is_none()
             && let Some((key, value)) = parse_pair(l)
@@ -195,6 +195,30 @@ fn parse_dir(
     }
 
     Ok(())
+}
+
+fn insert_pair(
+    properties: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) {
+    const SPECIAL_KEYS: &[&str] = &[
+        "end_of_line",
+        "indent_style",
+        "indent_size",
+        "insert_final_newline",
+        "trim_trailing_whitespace",
+        "charset",
+    ];
+
+    let key = key.to_lowercase();
+    let value = if SPECIAL_KEYS.contains(&key.as_str()) {
+        value.to_lowercase()
+    } else {
+        value.to_owned()
+    };
+
+    properties.insert(key, value);
 }
 
 fn parse_section(
