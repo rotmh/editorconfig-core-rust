@@ -1,286 +1,305 @@
-//! Ref: [spec].
-//!
-//! [spec]: https://spec.editorconfig.org/#glob-expressions
-
+use std::iter::Peekable;
+use std::num::{NonZero, NonZeroU32};
 use std::ops::RangeInclusive;
+use std::str::CharIndices;
 
-use chumsky::error::Simple;
-use chumsky::prelude::{any, choice, just, recursive};
-use chumsky::text::int;
-use chumsky::{IterParser, Parser};
-use either::Either;
+use regex::{Match, Regex};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum Error {
     /// Couldn't parse the input as a glob expression.
     Parse,
     /// A range was found that does not hold `num1 < num2` in `num1..num2`.
     InvalidRange,
+    NonDirPath,
+    RegexCompilation,
 }
 
-#[derive(Debug)]
 pub(crate) struct Glob {
-    tokens: Vec<Token>,
-
-    /// Whether there is a [`Token::PathSeparator`] in the tokens.
-    has_separator: bool,
+    re: Regex,
+    num_ranges: Vec<RangeInclusive<i32>>,
 }
 
 impl Glob {
-    pub(crate) fn new(source: &str) -> Result<Self, Error> {
-        let tokens = glob().parse(source).into_output().ok_or(Error::Parse)?;
+    /// # Arguments
+    ///
+    /// - `ec_dir` - the directory of the EditorConfig file which contains
+    ///   `pattern`. Must be an absolute path which doesn't end with a path
+    ///   seperator (i.e., `/`), and must have it's path separators normalized
+    ///   to `/`.
+    pub(crate) fn new<P, S>(ec_dir: P, pattern: S) -> Result<Self, Error>
+    where
+        P: AsRef<str>,
+        S: AsRef<str>,
+    {
+        if ec_dir.as_ref().ends_with('/') {
+            return Err(Error::NonDirPath);
+        }
 
-        let mut ranges = tokens.iter().filter_map(Token::as_numrange);
-        let all_ranges_are_valid = ranges.all(|r| r.start() < r.end());
-        if !all_ranges_are_valid {
+        let pattern = pattern.as_ref();
+
+        let (re, num_ranges) = Parser::new(pattern).parse();
+
+        if !num_ranges.iter().all(|r| r.start() < r.end()) {
             return Err(Error::InvalidRange);
         }
 
-        let has_separator = tokens.iter().any(Token::is_separator);
+        let has_seperator = pattern.contains('/');
+        let starts_with_sep = pattern.starts_with('/');
 
-        Ok(Self { tokens, has_separator })
+        let mut regex = "^".to_string() + &regex::escape(ec_dir.as_ref());
+        if !has_seperator {
+            regex.push_str(".*/");
+        } else if !starts_with_sep {
+            regex.push('/');
+        }
+        regex.push_str(&re);
+        regex.push('$');
+
+        let re = Regex::new(&regex).map_err(|_| Error::RegexCompilation)?;
+
+        Ok(Self { re, num_ranges })
     }
 
-    pub(crate) fn matches<S: AsRef<str>>(path: S) -> bool {
-        let path = path.as_ref();
-        todo!();
+    #[inline]
+    pub(crate) fn is_match<S>(&self, path: S) -> bool
+    where
+        S: AsRef<str>,
+    {
+        fn match_in_range(mat: Match, rng: &RangeInclusive<i32>) -> bool {
+            mat.as_str().parse().is_ok_and(|n| rng.contains(&n))
+        }
+
+        let Some(caps) = self.re.captures(path.as_ref()) else { return false };
+
+        caps.iter()
+            .skip(1)
+            .map(Option::unwrap)
+            .zip(self.num_ranges.iter())
+            .all(|(mat, range)| match_in_range(mat, range))
     }
 }
 
-type SimpleError<'src> = chumsky::extra::Err<Simple<'src, char>>;
+struct Parser<'a> {
+    pattern: &'a str,
+    chars: Peekable<CharIndices<'a>>,
+    curr: Option<(usize, char)>,
 
-fn glob<'src>() -> impl Parser<'src, &'src str, Vec<Token>, SimpleError<'src>> {
-    let star = just("*").to(Token::ZeroOrMoreNonSeparator);
-    let double_star = just("**").to(Token::ZeroOrMore);
-    let question_mark = just("?").to(Token::Any);
-    let path_separator = just("/").to(Token::PathSeperator);
+    are_braces_paired: bool,
+    brace_level: Option<NonZeroU32>,
+    // inside '[' ... ']'
+    is_inside_brackets: bool,
 
-    let literal = any().map(Token::Literal);
-
-    // Order matters.
-    choice((
-        path_separator,
-        escaped(),
-        numrange(),
-        alternates(),
-        charset(),
-        double_star,
-        star,
-        question_mark,
-        // Last.
-        literal,
-    ))
-    .repeated()
-    .collect()
+    num_ranges: Vec<RangeInclusive<i32>>,
+    regex: String,
 }
 
-fn escaped<'src>() -> impl Parser<'src, &'src str, Token, SimpleError<'src>> {
-    just("\\")
-        .ignore_then(any().filter(|ch| ['{', '[', '?', '*'].contains(ch)))
-        .map(Token::Escaped)
-}
-
-fn charset<'src>() -> impl Parser<'src, &'src str, Token, SimpleError<'src>> {
-    let open = just("[");
-    let close = just("]");
-    let negate = just("!").or_not().map(|n| n.is_some());
-    let chars = any().filter(|&ch| ch != ']').repeated().collect();
-    let body = negate.then(chars);
-
-    body.delimited_by(open, close)
-        .map(|(negated, chars)| Token::Set { negated, chars })
-}
-
-fn numrange<'src>() -> impl Parser<'src, &'src str, Token, SimpleError<'src>> {
-    let open = just("{");
-    let close = just("}");
-    let negative = just("-").or_not().map(|n| n.is_some());
-    let num_u16 = int(10).try_map(|s: &str, span| {
-        s.parse::<u16>().map_err(|_e| Simple::new(None, span))
-    });
-    let number = negative.then(num_u16).map(|(negative, n)| {
-        if negative { -(n as i16) as i32 } else { n as i32 }
-    });
-    let separator = just("..");
-    let body = number.then_ignore(separator).then(number);
-
-    // HACK: The range values are validated in the Glob::new function because
-    // failing here on `num2 <= num1` will cause the parser to parse the
-    // numrange as an alternates with one item.
-    body.delimited_by(open, close).map(|(n1, n2)| Token::NumRange(n1..=n2))
-}
-
-fn alternates<'src>() -> impl Parser<'src, &'src str, Token, SimpleError<'src>>
-{
-    recursive(|alternates| {
-        let open = just("{");
-        let close = just("}");
-        let separator = just(",");
-
-        let string =
-            any().filter(|&ch| ch != ',' && ch != '}').repeated().collect();
-
-        choice((alternates.map(Either::Right), string.map(Either::Left)))
-            .separated_by(separator)
-            .collect()
-            .delimited_by(open, close)
-            .map(|mut alts: Vec<Either<String, Alternates>>| {
-                // An alternate with only one element will match as a literal
-                // including the bracets (i.e., `{s1}` is `{s1}` and not `s1`).
-                if alts.len() == 1 {
-                    let el = alts.remove(0).map_left(|s| format!("{{{s}}}"));
-                    alts.insert(0, el);
-                }
-                alts
-            })
-            .map(Alternates)
-    })
-    .map(Token::Alternates)
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-enum Token {
-    /// `*`.
-    ZeroOrMoreNonSeparator,
-
-    /// `**`.
-    ZeroOrMore,
-
-    /// `?`.
-    Any,
-
-    /// `[abcd]` or `[!abcd]`.
-    Set {
-        negated: bool,
-        chars: Vec<char>,
-    },
-
-    /// `{s1,s2,s3}`.
-    Alternates(Alternates),
-
-    /// `{-5..3}`.
-    NumRange(RangeInclusive<i32>),
-
-    Literal(char),
-
-    Escaped(char),
-
-    /// `/`.
-    PathSeperator,
-}
-
-impl Token {
-    const fn as_numrange(&self) -> Option<&RangeInclusive<i32>> {
-        match self {
-            Token::NumRange(range) => Some(range),
-            _ => None,
+impl<'a> Parser<'a> {
+    fn new(pattern: &'a str) -> Self {
+        Self {
+            pattern,
+            chars: pattern.char_indices().peekable(),
+            curr: None,
+            are_braces_paired: check_are_braces_paired(pattern),
+            brace_level: None,
+            is_inside_brackets: false,
+            num_ranges: vec![],
+            regex: String::with_capacity(pattern.len()),
         }
     }
 
-    const fn is_separator(&self) -> bool {
-        matches!(self, Self::PathSeperator)
+    fn parse(mut self) -> (String, Vec<RangeInclusive<i32>>) {
+        while let Some(ch) = self.bump() {
+            match ch {
+                '\\' => self.parse_escape(),
+                '?' => self.parse_any(),
+                '*' => self.parse_star(),
+                '[' => self.parse_bracket(),
+                '{' => self.parse_open_brace(),
+                '}' => self.parse_close_brace(),
+                ',' => self.parse_comma(),
+                ch => self.parse_literal(ch),
+            }
+        }
+
+        (self.regex, self.num_ranges)
+    }
+
+    fn parse_escape(&mut self) {
+        if let Some(ch) = self.bump() {
+            if regex_syntax::is_meta_character(ch) {
+                self.regex.push('\\');
+            } else {
+                self.regex.push_str("\\\\");
+            }
+            self.regex.push(ch);
+        } else {
+            self.regex.push_str("\\\\");
+        }
+    }
+
+    fn parse_any(&mut self) {
+        self.regex.push_str("[^/]");
+    }
+
+    fn parse_star(&mut self) {
+        if self.peek().is_some_and(|ch| ch == '*') {
+            assert_eq!(self.bump(), Some('*'));
+            self.regex.push_str(".*");
+        } else {
+            self.regex.push_str("[^/]*");
+        }
+    }
+
+    fn parse_bracket(&mut self) {
+        self.regex.push('[');
+        if self.peek().is_some_and(|ch| ch == '!') {
+            assert_eq!(self.bump(), Some('!'));
+            self.regex.push('^');
+        }
+
+        let mut escaped = false;
+
+        while let Some(ch) = self.bump() {
+            match ch {
+                ch if escaped => {
+                    escaped = false;
+                    self.parse_literal(ch);
+                }
+                '\\' => escaped = true,
+                ']' => {
+                    self.regex.push(']');
+                    break;
+                }
+                ch => self.parse_literal(ch),
+            }
+        }
+    }
+
+    fn parse_open_brace(&mut self) {
+        if !self.are_braces_paired {
+            self.regex.push_str("\\{");
+            return;
+        }
+
+        let (curr_idx, _ch) = self.curr.unwrap();
+        if let Some(closing_brace_offset) =
+            is_single_item_braces(&self.pattern[curr_idx..])
+        {
+            let s = &self.pattern[curr_idx..=curr_idx + closing_brace_offset];
+
+            if let Some(range) = parse_range(s) {
+                // HACK: since we can't validate the number being in a range
+                // using regular expressions (well, at least not in way that
+                // doesn't specify all the possible numbers), we will capture
+                // the number, and validate it against the range after matching.
+                self.regex.push_str("([\\+\\-]?\\d+)");
+                self.num_ranges.push(range);
+            } else {
+                // If the braces only contains one element, we match it
+                // literally (e.g., `{s1}` is `{s1}` and not `s1`).
+                s.chars().for_each(|ch| self.parse_literal(ch));
+            }
+
+            // Skip 1 because `s` includes the `{` that we bumped to already.
+            for _ in (0..s.chars().count()).skip(1) {
+                let _ = self.bump().unwrap();
+            }
+        } else {
+            self.regex.push_str("(:?"); // non-capturing group.
+            self.increase_brace_level();
+        }
+    }
+
+    fn parse_close_brace(&mut self) {
+        if !self.are_braces_paired {
+            self.regex.push_str("\\}");
+            return;
+        }
+
+        self.regex.push(')');
+        self.decrease_brace_level();
+    }
+
+    fn parse_comma(&mut self) {
+        if self.brace_level.is_some() {
+            self.regex.push('|');
+        } else {
+            self.regex.push_str("\\,");
+        }
+    }
+
+    fn parse_literal(&mut self, ch: char) {
+        if regex_syntax::is_meta_character(ch) {
+            self.regex.push('\\');
+        }
+        self.regex.push(ch);
+    }
+
+    fn increase_brace_level(&mut self) {
+        const NON_ZERO_ONE: NonZeroU32 = NonZero::new(1).unwrap();
+
+        let l = self.brace_level.map_or(NON_ZERO_ONE, |l| l.saturating_add(1));
+        self.brace_level = Some(l);
+    }
+
+    fn decrease_brace_level(&mut self) {
+        self.brace_level =
+            self.brace_level.and_then(|l| NonZero::new(l.get() - 1));
+    }
+
+    fn bump(&mut self) -> Option<char> {
+        self.curr = self.chars.next();
+        self.curr.map(|(_idx, ch)| ch)
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.chars.peek().map(|&(_idx, ch)| ch)
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct Alternates(Vec<Either<String, Alternates>>);
+fn parse_range(s: &str) -> Option<RangeInclusive<i32>> {
+    let (num1, num2) =
+        s.strip_prefix('{')?.strip_suffix('}')?.split_once("..")?;
+    let start = num1.parse().ok()?;
+    let end = num2.parse().ok()?;
+    Some(RangeInclusive::new(start, end))
+}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn is_single_item_braces(s: &str) -> Option<usize> {
+    let mut escaped = false;
 
-    #[test]
-    fn parse() {
-        let tokens = Glob::new("[!abcd]\\*?/**/*.c{,c}").unwrap().tokens;
-        assert_eq!(
-            tokens,
-            [
-                Token::Set { negated: true, chars: vec!['a', 'b', 'c', 'd'] },
-                Token::Escaped('*'),
-                Token::Any,
-                Token::PathSeperator,
-                Token::ZeroOrMore,
-                Token::PathSeperator,
-                Token::ZeroOrMoreNonSeparator,
-                Token::Literal('.'),
-                Token::Literal('c'),
-                Token::Alternates(Alternates(vec![
-                    Either::Left("".to_string()),
-                    Either::Left("c".to_string()),
-                ])),
-            ]
-        );
+    for (idx, byte) in s.bytes().enumerate() {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'}' => return Some(idx),
+            b',' => return None,
+            _ => {}
+        }
     }
 
-    #[test]
-    fn numrange_and_alternates() {
-        let tokens =
-            Glob::new("{33..39}andthen{a,b,{{44,},d}}").unwrap().tokens;
-        assert_eq!(
-            tokens,
-            [
-                Token::NumRange(33..=39),
-                Token::Literal('a'),
-                Token::Literal('n'),
-                Token::Literal('d'),
-                Token::Literal('t'),
-                Token::Literal('h'),
-                Token::Literal('e'),
-                Token::Literal('n'),
-                Token::Alternates(Alternates(vec![
-                    Either::Left("a".to_string()),
-                    Either::Left("b".to_string()),
-                    Either::Right(Alternates(vec![
-                        Either::Right(Alternates(vec![
-                            Either::Left("44".to_string()),
-                            Either::Left("".to_string()),
-                        ])),
-                        Either::Left("d".to_string()),
-                    ])),
-                ])),
-            ]
-        );
+    None
+}
+
+fn check_are_braces_paired(pattern: &str) -> bool {
+    let mut escaped = false;
+    let mut left = 0;
+    let mut right = 0;
+
+    for byte in pattern.bytes() {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'{' => left += 1,
+            b'}' => right += 1,
+            _ => {}
+        }
+
+        if left < right {
+            return false;
+        }
     }
 
-    #[test]
-    fn invalid_numrange() {
-        assert_eq!(Glob::new("{-33..-34}").unwrap_err(), Error::InvalidRange);
-    }
-
-    #[test]
-    fn raw_alternates() {
-        let tokens = Glob::new("{s1}").unwrap().tokens;
-        assert_eq!(
-            tokens,
-            [Token::Alternates(Alternates(vec![Either::Left(
-                "{s1}".to_string()
-            )])),]
-        );
-    }
-
-    #[test]
-    fn alternate_empty_elements() {
-        let tokens = Glob::new("{,}").unwrap().tokens;
-        assert_eq!(
-            tokens,
-            [Token::Alternates(Alternates(vec![
-                Either::Left("".to_string()),
-                Either::Left("".to_string()),
-            ]))]
-        );
-    }
-
-    #[test]
-    fn escaped_and_literal_mix() {
-        let tokens = Glob::new("a\\*b?").unwrap().tokens;
-        assert_eq!(
-            tokens,
-            [
-                Token::Literal('a'),
-                Token::Escaped('*'),
-                Token::Literal('b'),
-                Token::Any,
-            ]
-        );
-    }
+    left == right
 }

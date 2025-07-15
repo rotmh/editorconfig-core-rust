@@ -1,294 +1,182 @@
-use std::str::FromStr;
+#![feature(trim_prefix_suffix, trait_alias)]
+
+mod glob;
+
+use std::collections::HashMap;
+use std::convert::identity;
+use std::fs::File;
+use std::io::{self, BufRead as _, BufReader};
+use std::ops::ControlFlow;
+use std::path::Path;
 
 use crate::glob::Glob;
-use crate::property::{Charset, EndOfLine, IndentStyle};
-
-mod core;
-mod glob;
-#[macro_use]
-mod property;
 
 /// Version which this implementation complies to.
-pub const EDITORCONFIG_VERSION: (u32, u32, u32) = (0, 17, 2);
+pub const EDITORCONFIG_VERSION: Version =
+    Version { major: 0, minor: 17, patch: 2 };
 
-/// The only valid name for an EditorConfig file.
-const FILE_NAME: &str = ".editorconfig";
+const DEFAULT_FILE_NAME: &str = ".editorconfig";
+const DEFAULT_ALLOW_UNSET: bool = true;
+const UNSET_VALUE: &str = "unset";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub enum Error {
     Parse,
+    InvalidPath,
+    Io(io::Error),
 }
 
-struct Document {
-    preamble: Preamble,
-    sections: Vec<Section>,
+pub struct Options<'a> {
+    pub file_name: &'a str,
+    pub allow_unset: bool,
 }
 
-impl FromStr for Document {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let doc = core::Document::parse(s).map_err(|_| Error::Parse)?;
-        Ok(Self::from(doc))
+impl<'a> Default for Options<'a> {
+    fn default() -> Self {
+        Self { file_name: DEFAULT_FILE_NAME, allow_unset: DEFAULT_ALLOW_UNSET }
     }
 }
 
-impl From<core::Document<'_>> for Document {
-    fn from(doc: core::Document) -> Self {
-        let preamble = Preamble::from_pairs(&doc.preamble);
-        let sections = doc.sections.into_iter().map(Section::from).collect();
+pub trait Property {
+    type Error;
 
-        Self { preamble, sections }
-    }
-}
+    const KEYS: &[&str];
 
-struct Preamble {
-    root: Option<bool>,
-}
-
-impl Preamble {
-    fn from_pairs(pairs: &[core::Pair]) -> Self {
-        let root = pairs
-            .iter()
-            .filter(|pair| pair.key.eq_ignore_ascii_case("root"))
-            .filter_map(|p| MaybeUnset::parse(p.value, parse_bool))
-            .next_back()
-            .and_then(MaybeUnset::into_value);
-
-        Self { root }
-    }
-}
-
-enum MaybeUnset<T> {
-    Value(T),
-    Unset,
-}
-
-impl<T> MaybeUnset<T> {
-    fn parse<F>(s: &str, f: F) -> Option<Self>
+    fn parse(value: &str) -> Result<Self, Self::Error>
     where
-        F: FnOnce(&str) -> Option<T>,
-    {
-        if s.eq_ignore_ascii_case("unset") {
-            Some(Self::Unset)
-        } else {
-            (f)(s).map(Self::Value)
-        }
-    }
-
-    fn into_value(self) -> Option<T> {
-        match self {
-            MaybeUnset::Value(value) => Some(value),
-            MaybeUnset::Unset => None,
-        }
-    }
+        Self: Sized;
 }
 
-fn parse_bool(s: &str) -> Option<bool> {
-    case_insensitive_map! { s;
-        "true" => true,
-        "false" => false,
-    }
-}
-
-fn parse_u32(s: &str) -> Option<u32> {
-    s.parse().ok()
-}
-
-struct Section {
-    header: Glob,
-    properties: Properties,
-}
-
-impl From<core::Section<'_>> for Section {
-    fn from(section: core::Section<'_>) -> Self {
-        let header = section.header.glob;
-        let properties = Properties::from_pairs(&section.pairs);
-
-        Self { header, properties }
-    }
-}
-
-struct Properties {
-    indent_style: Option<IndentStyle>,
-    indent_size: Option<u32>,
-    tab_width: Option<u32>,
-    end_of_line: Option<EndOfLine>,
-    charset: Option<Charset>,
-    spelling_language: Option<String>,
-    trim_trailing_whitespace: Option<bool>,
-    insert_final_newline: Option<bool>,
-}
+pub struct Properties(HashMap<String, String>);
 
 impl Properties {
-    fn empty() -> Self {
-        Self {
-            indent_style: None,
-            indent_size: None,
-            tab_width: None,
-            end_of_line: None,
-            charset: None,
-            spelling_language: None,
-            trim_trailing_whitespace: None,
-            insert_final_newline: None,
-        }
+    pub fn new<P>(path: P) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+    {
+        Self::new_with_options(path, Options::default())
     }
 
-    fn from_pairs(pairs: &[core::Pair]) -> Self {
-        macro_rules! apply_pair {
-            ($props:expr, $key:expr, $value:expr; $( $name:ident => $parse:expr),* $(,)? ) => {
-                match $key {
-                    $(
-                        s if s.eq_ignore_ascii_case(stringify!($name)) => {
-                            if let Some(mu) = MaybeUnset::parse($value, $parse) {
-                                $props.$name = mu.into_value();
-                            }
-                        }
-                    )*
-                    _ => {},
-                }
-            };
-        }
+    pub fn new_with_options<P>(path: P, options: Options) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+    {
+        let normalized_path = normalize_path(path.as_ref())?;
+        let mut properties = HashMap::new();
 
-        let mut props = Self::empty();
-
-        for pair in pairs {
-            apply_pair! {
-                props, pair.key, pair.value;
-
-                indent_style => IndentStyle::parse,
-                indent_size => parse_u32,
-                tab_width => parse_u32,
-                end_of_line => EndOfLine::parse,
-                charset => Charset::parse,
-                spelling_language => |s| Some(s.to_owned()),
-                trim_trailing_whitespace => parse_bool,
-                insert_final_newline => parse_bool,
+        for dir in path.as_ref().ancestors().skip(1) {
+            let control_flow =
+                parse_dir(dir, &normalized_path, &options, &mut properties)?;
+            if control_flow.is_break() {
+                break;
             }
         }
 
-        props
+        Ok(Self(properties))
+    }
+
+    pub fn get<P>(&self) -> Option<Result<P, P::Error>>
+    where
+        P: Property,
+    {
+        let value = P::KEYS.iter().find_map(|&key| self.0.get(key))?;
+        Some(P::parse(value))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn parse_dir(
+    ec_dir: &Path,
+    normalized_file_path: &str,
+    options: &Options,
+    properties: &mut HashMap<String, String>,
+) -> Result<ControlFlow<()>, Error> {
+    const COMMENT: &[char] = &['#', ';'];
 
-    fn parse(s: &str) -> Document {
-        s.parse().unwrap()
+    let ec_file_path = ec_dir.join(options.file_name);
+    let ec_file = match File::open(ec_file_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // The EditorConfig file doesn't have to exist at any of the dirs.
+            return Ok(ControlFlow::Continue(()));
+        }
+        Err(e) => return Err(Error::Io(e)),
+    };
+
+    let normalized_ec_dir = normalize_path(ec_dir)?;
+
+    let mut reader = BufReader::new(ec_file);
+
+    let mut line = String::new();
+
+    let mut section_matches_file = None;
+    let mut is_root = false;
+
+    while reader.read_line(&mut line).map_err(Error::Io)? != 0 {
+        let l = line.trim_suffix('\n').trim_suffix('\r').trim();
+        if l.starts_with(COMMENT) {
+            // We ignore comment lines.
+        } else if let Some(is_match) =
+            parse_section(normalized_file_path, &normalized_ec_dir, l)?
+        {
+            section_matches_file = Some(is_match);
+        } else if section_matches_file.is_some_and(identity)
+            && let Some((key, value)) = parse_pair(l)
+        {
+            if options.allow_unset && value.eq_ignore_ascii_case(UNSET_VALUE) {
+                properties.remove(&key.to_lowercase());
+            } else {
+                properties.insert(key.to_lowercase(), value.to_owned());
+            }
+        } else if section_matches_file.is_none()
+            && let Some((key, value)) = parse_pair(l)
+            && key.eq_ignore_ascii_case("root")
+            && value.eq_ignore_ascii_case("true")
+        {
+            is_root = true;
+        }
+
+        line.clear();
     }
 
-    #[test]
-    fn test_basic_preamble_and_section() {
-        let input = r#"
-            root = true
-
-            [*.rs]
-            indent_style = space
-            indent_size = 4
-            end_of_line = lf
-        "#;
-
-        let doc = parse(input);
-        assert_eq!(doc.preamble.root, Some(true));
-        assert_eq!(doc.sections.len(), 1);
-
-        let props = &doc.sections[0].properties;
-        assert_eq!(props.indent_style.unwrap(), IndentStyle::Space);
-        assert_eq!(props.indent_size.unwrap(), 4);
-        assert_eq!(props.end_of_line.unwrap(), EndOfLine::Lf);
+    if is_root {
+        Ok(ControlFlow::Break(()))
+    } else {
+        Ok(ControlFlow::Continue(()))
     }
+}
 
-    #[test]
-    fn test_case_insensitive_keys_and_values() {
-        let input = r#"
-            ROOT = TRUE
+fn parse_section(
+    normalized_file_path: &str,
+    normalized_ec_dir: &str,
+    line: &str,
+) -> Result<Option<bool>, Error> {
+    let Some(pattern) =
+        line.strip_prefix('[').and_then(|l| l.strip_suffix(']'))
+    else {
+        return Ok(None);
+    };
+    let glob =
+        Glob::new(normalized_ec_dir, pattern).map_err(|_| Error::Parse)?;
+    Ok(Some(glob.is_match(normalized_file_path)))
+}
 
-            [*.rs]
-            InDent_Style = SPaCe
-        "#;
+fn parse_pair(line: &str) -> Option<(&str, &str)> {
+    let (key, value) = line.split_once('=')?;
+    let (key, value) = (key.trim(), value.trim());
+    (!key.is_empty()).then_some((key, value))
+}
 
-        let doc = parse(input);
-        assert!(doc.preamble.root.unwrap());
-        let props = &doc.sections[0].properties;
-        assert_eq!(props.indent_style.unwrap(), IndentStyle::Space);
-    }
+fn normalize_path(path: &Path) -> Result<String, Error> {
+    let path = path.to_str().ok_or(Error::InvalidPath)?;
+    Ok(if cfg!(windows) { path.replace('\\', "/") } else { path.to_owned() })
+}
 
-    #[test]
-    fn test_unset_property() {
-        let input = r#"
-            [*.rs]
-            indent_size = 2
-            indent_size = unset
-        "#;
-
-        let doc = parse(input);
-        let props = &doc.sections[0].properties;
-        assert_eq!(props.indent_size, None);
-    }
-
-    #[test]
-    fn test_property_override() {
-        let input = r#"
-            [*.rs]
-            indent_size = 2
-            indent_size = 4
-        "#;
-
-        let doc = parse(input);
-        let props = &doc.sections[0].properties;
-        assert_eq!(props.indent_size.unwrap(), 4);
-    }
-
-    #[test]
-    fn test_multiple_sections() {
-        let input = r#"
-            [*.rs]
-            indent_style = space
-
-            [*.py]
-            indent_style = tab
-        "#;
-
-        let doc = parse(input);
-        assert_eq!(doc.sections.len(), 2);
-        assert_eq!(
-            doc.sections[0].properties.indent_style.unwrap(),
-            IndentStyle::Space
-        );
-        assert_eq!(
-            doc.sections[1].properties.indent_style.unwrap(),
-            IndentStyle::Tab
-        );
-    }
-
-    #[test]
-    fn test_spelling_language_and_charset() {
-        let input = r#"
-            [*.md]
-            spelling_language = en-GB
-            charset = utf-8
-        "#;
-
-        let doc = parse(input);
-        let props = &doc.sections[0].properties;
-        assert_eq!(props.spelling_language.as_ref().unwrap(), "en-GB");
-        assert_eq!(props.charset.unwrap(), Charset::Utf8);
-    }
-
-    #[test]
-    fn test_invalid_property_is_ignored() {
-        let input = r#"
-            [*.rs]
-            some_unknown_property = value
-        "#;
-
-        let doc = parse(input);
-        let props = &doc.sections[0].properties;
-
-        assert!(props.indent_size.is_none());
-        assert!(props.indent_style.is_none());
-        assert!(props.spelling_language.is_none());
-    }
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
 }
