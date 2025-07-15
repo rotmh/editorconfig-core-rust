@@ -211,7 +211,7 @@ impl<'a> Parser<'a> {
                 // using regular expressions (well, at least not in way that
                 // doesn't specify all the possible numbers), we will capture
                 // the number, and validate it against the range after matching.
-                self.regex.push_str("([\\+\\-]?\\d+)");
+                self.regex.push_str("([\\+\\-]?(:?0|[^0]\\d*))");
                 self.num_ranges.push(range);
             } else {
                 // If the braces only contains one element, we match it
