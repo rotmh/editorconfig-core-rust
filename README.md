@@ -8,11 +8,13 @@ An [EditorConfig] Core passing all the [editorconfig-core-test] tests.
 
 See [the documentation].
 
-## Note on the CLI
+## Testing
 
-This package contains a binary crate as well as the library. This binary
-contains an EditorConfig CLI which was created for testing purposes, as
-[editorconfig-core-test] operates on CLIs.
+The EditorConfig Cores testing suite uses CTest and tests CLI built around Core
+libraries.
+
+This crate contains an auxiliary EditorConfig CLI which was created for testing
+purposes, as stated above.
 
 Although it was created for testing, you can use it in your project for
 extracting properties of a path from the shell.
