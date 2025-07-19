@@ -1,5 +1,9 @@
 # EditorConfig Core
 
+[![Crates.io](https://img.shields.io/crates/v/editorconfig-core.svg)](https://crates.io/crates/editorconfig-core)
+[![Documentation](https://docs.rs/editorconfig-core/badge.svg)](https://docs.rs/editorconfig-core/)
+[![EditorConfig Core Tests](https://github.com/rotmh/editorconfig-core-rust/actions/workflows/tests.yaml/badge.svg)](https://github.com/rotmh/editorconfig-core-rust/actions/workflows/tests.yaml)
+
 An [EditorConfig] Core passing all the [editorconfig-core-test] tests.
 
 See [the documentation].
