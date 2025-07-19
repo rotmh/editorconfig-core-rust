@@ -42,15 +42,6 @@
 //! - The values are kept in their original form, except for the values of the ["Supported"](https://editorconfig.org/#supported-properties)
 //!   properties.
 //!
-//! # CLI
-//!
-//! This package contains a binary crate as well as the library. This binary
-//! contains an EditorConfig CLI which was created for testing purposes, as
-//! [editorconfig-core-test] operates on CLIs.
-//!
-//! Although it was created for testing, you can use it in your project for
-//! extracting properties of a path from the shell.
-//!
 //! [editorconfig-core-test]: https://github.com/editorconfig/editorconfig-core-test
 
 mod glob;
