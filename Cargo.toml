@@ -1,5 +1,5 @@
 [package]
-name = "tamlil-editorconfig"
+name = "editorconfigcore"
 version = "0.1.0"
 edition = "2024"
 

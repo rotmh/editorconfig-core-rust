@@ -1,5 +1,5 @@
 use clap::Parser as _;
-use tamlil_editorconfig::{
+use editorconfigcore::{
     DEFAULT_FILE_NAME, MAX_VERSION, Options, Properties, Version,
 };
 
@@ -8,9 +8,11 @@ struct Cli {
     #[arg(short, long)]
     version: bool,
 
+    /// An EditorConfig file path.
     #[arg(short = 'f', default_value_t = DEFAULT_FILE_NAME.to_string())]
     ec_file_name: String,
 
+    /// EditorConfig version to use.
     #[arg(short = 'b', default_value_t = MAX_VERSION)]
     ec_version: Version,
 
@@ -33,7 +35,7 @@ fn main() {
         let options = Options {
             file_name: &args.ec_file_name,
             version: args.ec_version,
-            allow_unset: false,
+            ..Options::default()
         };
         print_pairs(file, options);
     }

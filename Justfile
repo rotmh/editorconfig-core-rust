@@ -2,5 +2,5 @@ set shell := [ "fish", "-c" ]
 
 [working-directory: './_tests']
 ctest:
-    cmake -DEDITORCONFIG_CMD=(realpath ../../../target/debug/editorconfig) .
+    cmake -DEDITORCONFIG_CMD=(realpath ../target/debug/editorconfig) .
     ctest .

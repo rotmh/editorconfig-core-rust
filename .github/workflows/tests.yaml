@@ -1,0 +1,30 @@
+name: EditorConfig Core Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-editorconfig-core:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo with submodules
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Rust (stable)
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install just + fish + cmake
+      run: |
+        sudo apt update
+        sudo apt install -y just fish cmake
+
+    - name: Build crate
+      run: cargo build
+
+    - name: Run CTest suite
+      run: just ctest
+

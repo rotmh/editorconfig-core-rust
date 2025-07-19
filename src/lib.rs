@@ -1,5 +1,3 @@
-#![feature(trim_prefix_suffix, trait_alias)]
-
 mod glob;
 mod version;
 
@@ -15,8 +13,7 @@ pub use crate::version::Version;
 pub const MAX_VERSION: Version = Version { major: 0, minor: 17, patch: 2 };
 pub const DEFAULT_FILE_NAME: &str = ".editorconfig";
 
-const DEFAULT_ALLOW_UNSET: bool = true;
-
+const DEFAULT_ALLOW_UNSET: bool = false;
 const UNSET_VALUE: &str = "unset";
 
 #[derive(Debug)]
@@ -165,7 +162,13 @@ fn parse_dir(
     let mut section_matches_file = None;
 
     while reader.read_line(&mut line).map_err(Error::Io)? != 0 {
-        let l = line.trim_suffix('\n').trim_suffix('\r').trim();
+        let l = line
+            .strip_suffix('\n')
+            .unwrap_or(&line)
+            .strip_suffix('\r')
+            .unwrap_or(&line)
+            .trim();
+
         if l.starts_with(COMMENT) {
             // We ignore comment lines.
         } else if let Some(is_match) =
