@@ -2,11 +2,13 @@
 name = "editorconfig-core"
 version = "0.1.0"
 edition = "2024"
-include = ["/src"]
+include = ["/src", "/README.md"]
 description = "An EditorConfig Core passing all the editorconfig-core-test tests"
 license = "MIT"
 homepage = "https://github.com/rotmh/editorconfig-core-rust"
+repository = "https://github.com/rotmh/editorconfig-core-rust"
 authors = ["Rotem Horesh (rotmh)"]
+keywords = ["editorconfig"]
 
 [dependencies]
 regex = "1.11"
