@@ -1,7 +1,6 @@
 style_edition = "2024"
 
 max_width = 80
-format_code_in_doc_comments = true
 wrap_comments = true
 format_strings = true
 single_line_let_else_max_width = 80

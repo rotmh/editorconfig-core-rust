@@ -1,3 +1,58 @@
+//! An EditorConfig Core passing all the [editorconfig-core-test] tests.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use editorconfig_core::properties;
+//!
+//! // Let's define the property we want to extract.
+//!
+//! enum EndOfLine { Cr, Crlf, Lf }
+//!
+//! impl EndOfLine {
+//!     const KEY: &str = "end_of_line";
+//!
+//!     fn from_str<S: AsRef<str>>(s: S) -> Option<Self> {
+//!         match s.as_ref() {
+//!             "cr" => Some(Self::Cr),
+//!             "crlf" => Some(Self::Crlf),
+//!             "lf" => Some(Self::Lf),
+//!             _ => None,
+//!         }
+//!     }
+//! }
+//!
+//! // Now, fetch the properties for our file.
+//!
+//! // Must be a full, normalized, valid unicode path.
+//! let path = "/home/myself/README.md";
+//!
+//! let mut properties = properties(path).unwrap();
+//!
+//! // Discard properties that was unset.
+//! properties.retain(|_key, value| !value.eq_ignore_ascii_case("unset"));
+//!
+//! // Extract the property.
+//! let eof = properties.get(EndOfLine::KEY).and_then(EndOfLine::from_str);
+//! ```
+//!
+//! # Notes
+//!
+//! - All the keys are already lowercased via `str::to_lowercase`.
+//! - The values are kept in their original form, except for the values of the ["Supported"](https://editorconfig.org/#supported-properties)
+//!   properties.
+//!
+//! # CLI
+//!
+//! This package contains a binary crate as well as the library. This binary
+//! contains an EditorConfig CLI which was created for testing purposes, as
+//! [editorconfig-core-test] operates on CLIs.
+//!
+//! Although it was created for testing, you can use it in your project for
+//! extracting properties of a path from the shell.
+//!
+//! [editorconfig-core-test]: https://github.com/editorconfig/editorconfig-core-test
+
 mod glob;
 mod version;
 
@@ -10,11 +65,8 @@ use std::path::Path;
 use crate::glob::Glob;
 pub use crate::version::Version;
 
+/// Max. supported EditorConfig version.
 pub const MAX_VERSION: Version = Version { major: 0, minor: 17, patch: 2 };
-pub const DEFAULT_FILE_NAME: &str = ".editorconfig";
-
-const DEFAULT_ALLOW_UNSET: bool = false;
-const UNSET_VALUE: &str = "unset";
 
 #[derive(Debug)]
 pub enum Error {
@@ -23,79 +75,55 @@ pub enum Error {
     Io(io::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options<'a> {
+    /// Another name for EditorConfig files (defaults to ".editorconfig").
     pub file_name: &'a str,
-    pub allow_unset: bool,
+    /// EditorConfig version to use (defaults to [`MAX_VERSION`]).
     pub version: Version,
 }
 
 impl<'a> Default for Options<'a> {
     fn default() -> Self {
-        Self {
-            file_name: DEFAULT_FILE_NAME,
-            allow_unset: DEFAULT_ALLOW_UNSET,
-            version: MAX_VERSION,
-        }
+        Self { file_name: ".editorconfig", version: MAX_VERSION }
     }
 }
 
-pub trait Property {
-    type Error;
+/// All the keys are lowercased, values are kept in their original form, except
+/// for the values of "Supported" properties.
+pub type Properties = HashMap<String, String>;
 
-    const KEYS: &[&str];
-
-    fn parse(value: &str) -> Result<Self, Self::Error>
-    where
-        Self: Sized;
+/// Retreives the properties for the file at `path`.
+///
+/// Note: `path` doesn't have to exist.
+pub fn properties<P>(path: P) -> Result<Properties, Error>
+where
+    P: AsRef<Path>,
+{
+    properties_with_options(path, Options::default())
 }
 
-pub struct Properties(HashMap<String, String>);
+pub fn properties_with_options<P>(
+    path: P,
+    options: Options,
+) -> Result<Properties, Error>
+where
+    P: AsRef<Path>,
+{
+    let normalized_path = normalize_path(path.as_ref())?;
+    let mut properties = HashMap::new();
 
-impl Properties {
-    /// Retreives the properties for the file at `path`.
-    ///
-    /// Uses the default options, which are `".editorconfig"` as the filename
-    /// for EditorConfig files, and recognizing `"unset"` values
-    /// (case-insensitive) - which leads to discarding properties with `"unset"`
-    /// values.
-    ///
-    /// Note: `path` doesn't have to exist.
-    pub fn new<P>(path: P) -> Result<Self, Error>
-    where
-        P: AsRef<Path>,
-    {
-        Self::new_with_options(path, Options::default())
+    let ancestors: Vec<_> = path.as_ref().ancestors().skip(1).collect();
+
+    for dir in ancestors.iter().rev() {
+        parse_dir(dir, &normalized_path, &options, &mut properties)?;
     }
 
-    pub fn new_with_options<P>(path: P, options: Options) -> Result<Self, Error>
-    where
-        P: AsRef<Path>,
-    {
-        let normalized_path = normalize_path(path.as_ref())?;
-        let mut properties = HashMap::new();
+    process_properties(&mut properties, &options);
 
-        let ancestors: Vec<_> = path.as_ref().ancestors().skip(1).collect();
+    properties.retain(|key, _value| key != "unset");
 
-        for dir in ancestors.iter().rev() {
-            parse_dir(dir, &normalized_path, &options, &mut properties)?;
-        }
-
-        process_properties(&mut properties, &options);
-
-        Ok(Self(properties))
-    }
-
-    pub fn get<P>(&self) -> Option<Result<P, P::Error>>
-    where
-        P: Property,
-    {
-        let value = P::KEYS.iter().find_map(|&key| self.0.get(key))?;
-        Some(P::parse(value))
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
+    Ok(properties)
 }
 
 /// Process and modify the properties to adhere to the specification at the
@@ -178,11 +206,7 @@ fn parse_dir(
         } else if section_matches_file.is_some_and(identity)
             && let Some((key, value)) = parse_pair(l)
         {
-            if options.allow_unset && value.eq_ignore_ascii_case(UNSET_VALUE) {
-                properties.remove(&key.to_lowercase());
-            } else {
-                insert_pair(properties, key, value);
-            }
+            insert_pair(properties, key, value);
         } else if section_matches_file.is_none()
             && let Some((key, value)) = parse_pair(l)
             && key.eq_ignore_ascii_case("root")

@@ -1,6 +1,6 @@
 use clap::Parser as _;
-use editorconfigcore::{
-    DEFAULT_FILE_NAME, MAX_VERSION, Options, Properties, Version,
+use editorconfig_core::{
+    MAX_VERSION, Options, Version, properties_with_options,
 };
 
 #[derive(clap::Parser)]
@@ -9,12 +9,12 @@ struct Cli {
     version: bool,
 
     /// An EditorConfig file path.
-    #[arg(short = 'f', default_value_t = DEFAULT_FILE_NAME.to_string())]
-    ec_file_name: String,
+    #[arg(short = 'f')]
+    ec_file_name: Option<String>,
 
     /// EditorConfig version to use.
-    #[arg(short = 'b', default_value_t = MAX_VERSION)]
-    ec_version: Version,
+    #[arg(short = 'b')]
+    ec_version: Option<Version>,
 
     files: Vec<String>,
 }
@@ -32,19 +32,23 @@ fn main() {
             println!("[{file}]");
         }
 
-        let options = Options {
-            file_name: &args.ec_file_name,
-            version: args.ec_version,
-            ..Options::default()
-        };
+        let mut options = Options::default();
+        if let Some(file_name) = args.ec_file_name.as_ref() {
+            options.file_name = file_name;
+        }
+        if let Some(version) = args.ec_version {
+            options.version = version;
+        }
+
         print_pairs(file, options);
     }
 }
 
 fn print_pairs(file: &str, options: Options) {
-    let props = Properties::new_with_options(file, options).unwrap();
+    let props = properties_with_options(file, options).unwrap();
 
     let mut props = props.iter().collect::<Vec<_>>();
+    // The testing suite expects them to be sorted.
     props.sort_unstable_by_key(|&(key, _value)| key);
 
     for (key, value) in props {

@@ -17,14 +17,17 @@ jobs:
     - name: Install Rust (stable)
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Install just + fish + cmake
+    - name: Install cmake
       run: |
         sudo apt update
-        sudo apt install -y just fish cmake
+        sudo apt install -y cmake
 
     - name: Build crate
       run: cargo build
 
     - name: Run CTest suite
-      run: just ctest
+      working-directory: ./_tests
+      run: |
+        cmake -DEDITORCONFIG_CMD=$(realpath ../target/debug/editorconfig) .
+        ctest .
 
