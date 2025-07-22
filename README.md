@@ -4,26 +4,26 @@
 [![Documentation](https://docs.rs/editorconfig-core/badge.svg)](https://docs.rs/editorconfig-core/)
 [![EditorConfig Core Tests](https://github.com/rotmh/editorconfig-core-rust/actions/workflows/tests.yaml/badge.svg)](https://github.com/rotmh/editorconfig-core-rust/actions/workflows/tests.yaml)
 
-An [EditorConfig] Core passing all the [editorconfig-core-test] tests.
+An [EditorConfig] Core passing all the [`editorconfig-core-test`] tests.
 
 See [the documentation].
 
 ## Testing
 
-The EditorConfig Cores testing suite uses CTest and tests CLI built around Core
-libraries.
+The EditorConfig core test suite ([`editorconfig-core-test`]) uses CTest and
+validates CLI tools built on top of core libraries.
 
-This crate contains an auxiliary EditorConfig CLI which was created for testing
-purposes, as stated above.
-
-Although it was created for testing, you can use it in your project for
-extracting properties of a path from the shell.
-
-Example usage:
+This crate includes a simple CLI (`editorconfig`) to support that testing, but
+it can also be used as a standalone tool:
 
 ```sh
-cargo build --bin editorconfig
-editorconfig ./README.md
+$ cargo build --bin editorconfig
+
+$ # Example usage and output
+$ ./target/debug/editorconfig ./README.md
+
+charset=utf-8
+end_of_line=lf
 ```
 
 ## License
@@ -31,5 +31,5 @@ editorconfig ./README.md
 Licensed under the MIT license ([LICENSE](LICENSE) or http://opensource.org/licenses/MIT).
 
 [EditorConfig]: https://editorconfig.org/
-[editorconfig-core-test]: https://github.com/editorconfig/editorconfig-core-test
+[`editorconfig-core-test`]: https://github.com/editorconfig/editorconfig-core-test
 [the documentation]: https://docs.rs/editorconfig-core/

@@ -24,7 +24,7 @@ fn main() {
 
     if args.version {
         print_version();
-        std::process::exit(0);
+        return;
     }
 
     for file in args.files.iter() {
@@ -57,5 +57,5 @@ fn print_pairs(file: &str, options: Options) {
 }
 
 fn print_version() {
-    println!("EditorConfig Version {MAX_VERSION}");
+    println!("EditorConfig Rust Core Version {MAX_VERSION}");
 }
